@@ -7,6 +7,9 @@ const supabase = supabaseUrl && supabaseKey ? createClient(supabaseUrl, supabase
 
 const categories = ['Kühlung','Getränke','Milchprodukte','Snacks','Süßwaren','Backshop','Sonstiges']
 const reasons = ['Abgelaufen','Backwaren Tagesende','Beschädigt','Kühlkette unterbrochen','Sonstiges']
+const roles = ['Chef','Stationsleitung','Mitarbeiter']
+function canDelete(role){ return role === 'Chef' || role === 'Stationsleitung' }
+function canManageEmployees(role){ return role === 'Chef' }
 
 function daysUntil(dateString){
   const today = new Date(); today.setHours(0,0,0,0)
@@ -75,6 +78,9 @@ export default function App(){
   const [num,setNum]=useState('')
   const [pin,setPin]=useState('')
   const [loginMsg,setLoginMsg]=useState('')
+  const [mustChangePassword,setMustChangePassword]=useState(false)
+  const [newPin,setNewPin]=useState('')
+  const [newPin2,setNewPin2]=useState('')
   const [items,setItems]=useState([])
   const [writeoffs,setWriteoffs]=useState([])
   const [view,setView]=useState('dashboard')
@@ -97,7 +103,27 @@ export default function App(){
     const {data,error} = await supabase.from('mitarbeiter').select('*').eq('nummer', n).eq('passwort', p).maybeSingle()
     if(error) { console.error(error); return setLoginMsg('Login-Tabelle prüfen: mitarbeiter, nummer, passwort, RLS aus.') }
     if(!data) return setLoginMsg('Login fehlgeschlagen. Nummer oder Passwort prüfen.')
-    setUser(data); setView('dashboard')
+    setUser(data)
+    if(data.passwort === '0000' || data.muss_passwort_aendern){
+      setMustChangePassword(true)
+      setView('dashboard')
+      return
+    }
+    setView('dashboard')
+  }
+  async function changePassword(e){
+    e?.preventDefault(); setLoginMsg('')
+    const a = String(newPin).trim()
+    const b = String(newPin2).trim()
+    if(!/^\d{4}$/.test(a)) return setLoginMsg('Das neue Passwort muss genau 4 Zahlen haben.')
+    if(a === '0000') return setLoginMsg('Bitte nicht wieder 0000 benutzen.')
+    if(a !== b) return setLoginMsg('Die Passwörter stimmen nicht überein.')
+    const {error} = await supabase.from('mitarbeiter').update({passwort:a, muss_passwort_aendern:false}).eq('id', user.id)
+    if(error){ console.error(error); return setLoginMsg('Passwort konnte nicht gespeichert werden.') }
+    setUser({...user, passwort:a, muss_passwort_aendern:false})
+    setMustChangePassword(false)
+    setNewPin(''); setNewPin2('')
+    setView('dashboard')
   }
   async function loadAll(){ await Promise.all([loadItems(), loadWriteoffs()]) }
   async function enablePush(){
@@ -163,7 +189,10 @@ export default function App(){
     if(error){ console.error(error); return setMsg('Artikel konnte nicht gespeichert werden. Tabelle mhd_artikel prüfen.') }
     setForm({artikel:'',barcode:'',kategorie:'Sonstiges',mhd:'',menge:1,bild_url:''}); await loadItems(); setMsg('Artikel gespeichert.')
   }
-  async function remove(id){ await supabase.from('mhd_artikel').delete().eq('id',id); await loadItems() }
+  async function remove(id){
+    if(!canDelete(user?.rolle || 'Mitarbeiter')){ setMsg('Nur Chef oder Stationsleitung dürfen Artikel löschen.'); return }
+    await supabase.from('mhd_artikel').delete().eq('id',id); await loadItems()
+  }
   async function writeoff(item, grund){
     const row={artikel:item.artikel,barcode:item.barcode,kategorie:item.kategorie,mhd:item.mhd,menge:item.menge,grund,mitarbeiter:user?.name||'',bild_url:item.bild_url}
     const {error}=await supabase.from('abschriften').insert(row)
@@ -183,9 +212,11 @@ export default function App(){
 
   if(!user) return <div className="loginPage"><form className="loginCard" onSubmit={login}><div className="logo">MHD</div><h1>Tankstelle Ludweiler</h1><p>Mitarbeiter-Login</p><input inputMode="numeric" placeholder="Nummer" value={num} onChange={e=>setNum(e.target.value)}/><input inputMode="numeric" type="password" placeholder="4-stelliges Passwort" value={pin} onChange={e=>setPin(e.target.value)}/><button>Einloggen</button>{loginMsg&&<div className="error">{loginMsg}</div>}</form></div>
 
+  if(mustChangePassword) return <div className="loginPage"><form className="loginCard" onSubmit={changePassword}><div className="logo">🔐</div><h1>Neues Passwort setzen</h1><p>Beim ersten Login muss das Standardpasswort 0000 geändert werden.</p><input inputMode="numeric" type="password" maxLength="4" placeholder="Neues 4-stelliges Passwort" value={newPin} onChange={e=>setNewPin(e.target.value)}/><input inputMode="numeric" type="password" maxLength="4" placeholder="Passwort wiederholen" value={newPin2} onChange={e=>setNewPin2(e.target.value)}/><button>Passwort speichern</button>{loginMsg&&<div className="error">{loginMsg}</div>}<button type="button" className="ghost full" onClick={()=>{setUser(null);setMustChangePassword(false)}}>Abbrechen</button></form></div>
+
   return <div className="app">
-    <header><div><small>MHD Kontrolle</small><h1>Hallo {user.name || user.nummer}</h1></div><button className="ghost" onClick={()=>setUser(null)}>Logout</button></header>
-    <nav>{['dashboard','erfassen','artikel','abschriften','backwaren'].map(v=><button key={v} className={view===v?'active':''} onClick={()=>setView(v)}>{v==='dashboard'?'Übersicht':v==='erfassen'?'Erfassen':v==='artikel'?'Artikel':v==='abschriften'?'Abschriften':'Backwaren'}</button>)}</nav>
+    <header><div><small>MHD Kontrolle · {user.rolle || 'Mitarbeiter'}</small><h1>Hallo {user.name || user.nummer}</h1></div><button className="ghost" onClick={()=>setUser(null)}>Logout</button></header>
+    <nav>{['dashboard','erfassen','artikel','abschriften','backwaren', ...(canManageEmployees(user?.rolle) ? ['mitarbeiter'] : [])].map(v=><button key={v} className={view===v?'active':''} onClick={()=>setView(v)}>{v==='dashboard'?'Übersicht':v==='erfassen'?'Erfassen':v==='artikel'?'Artikel':v==='abschriften'?'Abschriften':v==='backwaren'?'Backwaren':'Mitarbeiter'}</button>)}</nav>
     {msg&&<div className="msg">{msg}</div>}
 
     {view==='dashboard'&&<section><div className="stats"><Card t="Gesamt" v={stats.total}/><Card t="Abgelaufen" v={stats.expired} danger/><Card t="Bald" v={stats.soon} warn/><Card t="7 Tage" v={stats.week}/></div><div className="dashActions"><button className="primary big" onClick={()=>setView('erfassen')}>+ Schnell erfassen</button><button className="secondary big" onClick={enablePush}>🔔 Push aktivieren/testen</button></div><p className="hint">Push-Status: {pushState === 'granted' ? 'aktiviert' : pushState === 'denied' ? 'blockiert' : 'noch nicht aktiviert'}. Auf iPhone am besten als App zum Home-Bildschirm hinzufügen.</p><List items={filtered.slice(0,6)} onWriteoff={writeoff} onRemove={remove}/></section>}
@@ -202,8 +233,10 @@ export default function App(){
     {view==='artikel'&&<section><Filters search={search} setSearch={setSearch} cat={cat} setCat={setCat}/>{grouped.map(g=><div className="group" key={g.name}><div className="groupHead">{g.img&&<img src={g.img}/>}<b>{g.name}</b><span>{g.rows.length} MHD-Einträge</span></div><List items={g.rows} onWriteoff={writeoff} onRemove={remove}/></div>)}</section>}
     {view==='abschriften'&&<Writeoffs rows={writeoffs}/>} 
     {view==='backwaren'&&<section><h2>Backwaren Tagesende</h2><List items={items.filter(x=>x.kategorie==='Backshop')} onWriteoff={(i)=>writeoff(i,'Backwaren Tagesende')} onRemove={remove} bakery/></section>}
+    {view==='mitarbeiter'&&<EmployeeInfo/>}
   </div>
 }
+function EmployeeInfo(){return <section><h2>Mitarbeiter & Rollen</h2><div className="empty">Mitarbeiter werden in Supabase in der Tabelle <b>mitarbeiter</b> gepflegt. Rollen: Chef, Stationsleitung, Mitarbeiter. Standardpasswort: 0000, danach Passwortwechsel beim ersten Login.</div></section>}
 function Card({t,v,danger,warn}){return <div className={`stat ${danger?'danger':warn?'warn':''}`}><span>{t}</span><b>{v}</b></div>}
 function Filters({search,setSearch,cat,setCat}){return <div className="filters"><input placeholder="Suche Artikel / Barcode" value={search} onChange={e=>setSearch(e.target.value)}/><select value={cat} onChange={e=>setCat(e.target.value)}><option value="alle">Alle</option>{categories.map(c=><option key={c}>{c}</option>)}</select></div>}
 function List({items,onWriteoff,onRemove,bakery}){return <div className="list">{items.map(item=><Item key={item.id} item={item} onWriteoff={onWriteoff} onRemove={onRemove} bakery={bakery}/>)}{!items.length&&<div className="empty">Keine Einträge.</div>}</div>}
